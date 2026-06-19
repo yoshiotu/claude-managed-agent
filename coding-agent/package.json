@@ -1,0 +1,28 @@
+{
+  "name": "coding-agent",
+  "version": "1.0.0",
+  "description": "Autonomous coding agent powered by Claude Managed Agents",
+  "main": "dist/webhook.js",
+  "scripts": {
+    "dev": "tsx src/webhook.ts",
+    "build": "tsc",
+    "start": "node dist/webhook.js",
+    "setup": "tsx src/setup.ts",
+    "cleanup": "tsx src/cleanup.ts"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@anthropic-ai/aws-sdk": "^0.5.0",
+    "@anthropic-ai/sdk": "^0.105.0",
+    "@types/express": "^5.0.6",
+    "@types/node": "^25.9.3",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "tsx": "^4.22.4",
+    "typescript": "^6.0.3",
+    "zod": "^4.4.3"
+  }
+}

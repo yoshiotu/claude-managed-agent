@@ -11,45 +11,60 @@ func main() {
 	client := anthropic.NewClient()
 	ctx := context.Background()
 
-	agent, err := client.Beta.Agents.New(ctx, anthropic.BetaAgentNewParams{
-		Name: "Coding Assistant",
-		Model: anthropic.BetaManagedAgentsModelConfigParams{
-			ID: anthropic.BetaManagedAgentsModelClaudeOpus4_7,
-		},
-		System: anthropic.String("You are a helpful coding assistant. Write clean, well-documented code."),
-		Tools: []anthropic.BetaAgentNewParamsToolUnion{{
-			OfAgentToolset20260401: &anthropic.BetaManagedAgentsAgentToolset20260401Params{
-				Type: anthropic.BetaManagedAgentsAgentToolset20260401ParamsTypeAgentToolset20260401,
-			},
-		}},
-	})
-	if err != nil {
-		panic(err)
-	}
+	//	agent, err := client.Beta.Agents.New(ctx, anthropic.BetaAgentNewParams{
+	//		Name: "Coding Assistant",
+	//		Model: anthropic.BetaManagedAgentsModelConfigParams{
+	//			ID: anthropic.BetaManagedAgentsModelClaudeOpus4_7,
+	//		},
+	//		System: anthropic.String("You are a helpful coding assistant. Write clean, well-documented code."),
+	//		Tools: []anthropic.BetaAgentNewParamsToolUnion{{
+	//			OfAgentToolset20260401: &anthropic.BetaManagedAgentsAgentToolset20260401Params{
+	//				Type: anthropic.BetaManagedAgentsAgentToolset20260401ParamsTypeAgentToolset20260401,
+	//			},
+	//		}},
+	//	})
+	//	if err != nil {
+	//		panic(err)
+	//	}
+	//
+	//	fmt.Printf("Agent ID: %s, version: %d\n", agent.ID, agent.Version)
+	//
+	//	environment, err := client.Beta.Environments.New(ctx, anthropic.BetaEnvironmentNewParams{
+	//		Name: "quickstart-env",
+	//		Config: anthropic.BetaEnvironmentNewParamsConfigUnion{
+	//			OfCloud: &anthropic.BetaCloudConfigParams{
+	//				Networking: anthropic.BetaCloudConfigParamsNetworkingUnion{
+	//					OfUnrestricted: &anthropic.BetaUnrestrictedNetworkParam{},
+	//				},
+	//			},
+	//		},
+	//	})
+	//	if err != nil {
+	//		panic(err)
+	//	}
+	//
+	//	fmt.Printf("Environment ID: %s\n", environment.ID)
 
-	fmt.Printf("Agent ID: %s, version: %d\n", agent.ID, agent.Version)
+	// agent, err := client.Beta.Agents.Get(ctx, "agent_01VdRiHmMBcTkp7EBhpHPGZk", anthropic.BetaAgentGetParams{})
+	// if err != nil {
+	// 	panic(err)
+	// }
 
-	environment, err := client.Beta.Environments.New(ctx, anthropic.BetaEnvironmentNewParams{
-		Name: "quickstart-env",
-		Config: anthropic.BetaEnvironmentNewParamsConfigUnion{
-			OfCloud: &anthropic.BetaCloudConfigParams{
-				Networking: anthropic.BetaCloudConfigParamsNetworkingUnion{
-					OfUnrestricted: &anthropic.BetaUnrestrictedNetworkParam{},
-				},
-			},
-		},
-	})
-	if err != nil {
-		panic(err)
-	}
+	// environment, err := client.Beta.Environments.Get(ctx, "env_01RrGCvb1p9SfkL78pnftret", anthropic.BetaEnvironmentGetParams{})
+	// if err != nil {
+	// 	panic(err)
+	// }
 
-	fmt.Printf("Environment ID: %s\n", environment.ID)
+	// session, err := client.Beta.Sessions.New(ctx, anthropic.BetaSessionNewParams{
+	// 	Agent:         anthropic.BetaSessionNewParamsAgentUnion{OfString: anthropic.String(agent.ID)},
+	// 	EnvironmentID: environment.ID,
+	// 	Title:         anthropic.String("Quickstart session"),
+	// })
+	// if err != nil {
+	// 	panic(err)
+	// }
 
-	session, err := client.Beta.Sessions.New(ctx, anthropic.BetaSessionNewParams{
-		Agent:         anthropic.BetaSessionNewParamsAgentUnion{OfString: anthropic.String(agent.ID)},
-		EnvironmentID: environment.ID,
-		Title:         anthropic.String("Quickstart session"),
-	})
+	session, err := client.Beta.Sessions.Get(ctx, "sesn_01JdJ2msjfKaUvE6od4KZ4yq", anthropic.BetaSessionGetParams{})
 	if err != nil {
 		panic(err)
 	}
@@ -67,7 +82,8 @@ func main() {
 				Content: []anthropic.BetaManagedAgentsUserMessageEventParamsContentUnion{{
 					OfText: &anthropic.BetaManagedAgentsTextBlockParam{
 						Type: anthropic.BetaManagedAgentsTextBlockTypeText,
-						Text: "Create a Python script that generates the first 20 Fibonacci numbers and saves them to fibonacci.txt",
+						// Text: "Create a Python script that generates the first 20 Fibonacci numbers and saves them to fibonacci.txt",
+						Text: "Please run the script and echo the output",
 					},
 				}},
 			},

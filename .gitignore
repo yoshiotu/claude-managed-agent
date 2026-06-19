@@ -1,0 +1,19 @@
+# Compiled Go binary
+/claude-managed-agent
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Node (coding-agent has its own .gitignore too, but belt-and-suspenders)
+node_modules/
+dist/
+
+# Secrets / local env (never commit real credentials)
+.env
+*.env.local
+
+# OS
+.DS_Store

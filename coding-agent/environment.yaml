@@ -1,0 +1,6 @@
+name: blueberry-dev
+description: Development environment for the blueberry coding agent
+config:
+  type: cloud
+  networking:
+    type: unrestricted
