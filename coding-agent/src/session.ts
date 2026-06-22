@@ -5,18 +5,83 @@ import type { ReviewTask } from "./github.js";
 
 const REPO_URL = "https://github.com/yoshiotu/blueberry";
 
-/**
- * Implement a Linear ticket: branch off main, write code + tests, open a PR.
- */
+type SessionParams = Parameters<Anthropic["beta"]["sessions"]["create"]>[0];
+
+// ---------------------------------------------------------------------------
+// Fire-and-forget starters (used by the Lambda handler).
+// Create the session and send the kickoff outcome, then return. The agent runs
+// to completion autonomously on Anthropic's cloud (the MCP toolset is
+// always_allow, so it never pauses for confirmations). Observe runs in the
+// Claude session viewer.
+// ---------------------------------------------------------------------------
+
+export async function startTicketSession(
+  client: Anthropic,
+  config: Config,
+  ticket: LinearTicket
+): Promise<string> {
+  const session = await client.beta.sessions.create(ticketSessionParams(config, ticket));
+  logCreated(ticket.identifier, session.id);
+  await sendOutcome(client, session.id, buildTaskDescription(ticket), buildRubric(ticket));
+  return session.id;
+}
+
+export async function startReviewFixSession(
+  client: Anthropic,
+  config: Config,
+  task: ReviewTask
+): Promise<string> {
+  const session = await client.beta.sessions.create(reviewSessionParams(config, task));
+  logCreated(`PR#${task.prNumber}`, session.id);
+  await sendOutcome(
+    client,
+    session.id,
+    buildReviewFixDescription(task),
+    buildReviewFixRubric(task)
+  );
+  return session.id;
+}
+
+// ---------------------------------------------------------------------------
+// Drive variants (used by the local Express dev server for live logging).
+// Same kickoff, but they stream the event log to stdout until the session ends.
+// ---------------------------------------------------------------------------
+
 export async function runTicketSession(
   client: Anthropic,
   config: Config,
   ticket: LinearTicket
 ): Promise<void> {
-  const label = ticket.identifier;
-  console.log(`[${label}] Starting session for: ${ticket.title}`);
+  const session = await client.beta.sessions.create(ticketSessionParams(config, ticket));
+  logCreated(ticket.identifier, session.id);
+  const stream = await client.beta.sessions.events.stream(session.id);
+  await sendOutcome(client, session.id, buildTaskDescription(ticket), buildRubric(ticket));
+  await drive(client, session.id, ticket.identifier, stream);
+}
 
-  const session = await client.beta.sessions.create({
+export async function runReviewFixSession(
+  client: Anthropic,
+  config: Config,
+  task: ReviewTask
+): Promise<void> {
+  const session = await client.beta.sessions.create(reviewSessionParams(config, task));
+  logCreated(`PR#${task.prNumber}`, session.id);
+  const stream = await client.beta.sessions.events.stream(session.id);
+  await sendOutcome(
+    client,
+    session.id,
+    buildReviewFixDescription(task),
+    buildReviewFixRubric(task)
+  );
+  await drive(client, session.id, `PR#${task.prNumber}`, stream);
+}
+
+// ---------------------------------------------------------------------------
+// Shared building blocks
+// ---------------------------------------------------------------------------
+
+function ticketSessionParams(config: Config, ticket: LinearTicket): SessionParams {
+  return {
     agent: config.AGENT_ID,
     environment_id: config.ENVIRONMENT_ID,
     title: `${ticket.identifier}: ${ticket.title}`,
@@ -33,27 +98,11 @@ export async function runTicketSession(
       linear_ticket_id: ticket.id,
       linear_identifier: ticket.identifier,
     },
-  });
-
-  await kickoffAndDrive(client, session.id, label, {
-    description: buildTaskDescription(ticket),
-    rubric: buildRubric(ticket),
-  });
+  };
 }
 
-/**
- * Revise an existing PR in response to a submitted review: the repo is checked
- * out on the PR branch; address the comments and push to the same branch.
- */
-export async function runReviewFixSession(
-  client: Anthropic,
-  config: Config,
-  task: ReviewTask
-): Promise<void> {
-  const label = `PR#${task.prNumber}`;
-  console.log(`[${label}] Starting review-fix session (${task.comments.length} comment(s))`);
-
-  const session = await client.beta.sessions.create({
+function reviewSessionParams(config: Config, task: ReviewTask): SessionParams {
+  return {
     agent: config.AGENT_ID,
     environment_id: config.ENVIRONMENT_ID,
     title: `Review fix: PR #${task.prNumber}`,
@@ -71,43 +120,41 @@ export async function runReviewFixSession(
       branch: task.branch,
       ...(task.ticketId ? { linear_identifier: task.ticketId } : {}),
     },
-  });
-
-  await kickoffAndDrive(client, session.id, label, {
-    description: buildReviewFixDescription(task),
-    rubric: buildReviewFixRubric(task),
-  });
+  };
 }
 
-/**
- * Shared driver: open the stream, send the kickoff outcome, and drain events
- * until the session reaches a terminal state. Auto-approves tool confirmations.
- */
-async function kickoffAndDrive(
+async function sendOutcome(
   client: Anthropic,
   sessionId: string,
-  label: string,
-  outcome: { description: string; rubric: string }
+  description: string,
+  rubric: string
 ): Promise<void> {
-  console.log(`[${label}] Session created: ${sessionId}`);
-  console.log(
-    `[${label}] Watch live: https://platform.claude.com/workspaces/default/sessions/${sessionId}`
-  );
-
-  // Open the event stream BEFORE sending the kickoff so no events are missed.
-  const stream = await client.beta.sessions.events.stream(sessionId);
-
   await client.beta.sessions.events.send(sessionId, {
     events: [
       {
         type: "user.define_outcome",
-        description: outcome.description,
-        rubric: { type: "text", content: outcome.rubric },
+        description,
+        rubric: { type: "text", content: rubric },
         max_iterations: 5,
       },
     ],
   });
+}
 
+function logCreated(label: string, sessionId: string): void {
+  console.log(`[${label}] Session created: ${sessionId}`);
+  console.log(
+    `[${label}] Watch live: https://platform.claude.com/workspaces/default/sessions/${sessionId}`
+  );
+}
+
+/** Drain the event stream to stdout until the session reaches a terminal state. */
+async function drive(
+  client: Anthropic,
+  sessionId: string,
+  label: string,
+  stream: Awaited<ReturnType<Anthropic["beta"]["sessions"]["events"]["stream"]>>
+): Promise<void> {
   const seenIds = new Set<string>();
 
   for await (const event of stream) {
@@ -129,7 +176,6 @@ async function kickoffAndDrive(
 
       case "session.status_idle":
         if (event.stop_reason?.type === "requires_action") {
-          // Auto-approve pending tool calls — we trust this agent's toolset.
           const eventIds = event.stop_reason.event_ids ?? [];
           if (eventIds.length > 0) {
             console.log(`[${label}] Auto-approving ${eventIds.length} pending tool call(s).`);
@@ -169,6 +215,10 @@ async function kickoffAndDrive(
 
   console.log(`[${label}] Session complete.`);
 }
+
+// ---------------------------------------------------------------------------
+// Task descriptions + rubrics
+// ---------------------------------------------------------------------------
 
 function buildTaskDescription(ticket: LinearTicket): string {
   return [

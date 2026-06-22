@@ -8,7 +8,9 @@
     "build": "tsc",
     "start": "node dist/webhook.js",
     "setup": "tsx src/setup.ts",
-    "cleanup": "tsx src/cleanup.ts"
+    "cleanup": "tsx src/cleanup.ts",
+    "build:lambda": "esbuild src/handler.ts --bundle --platform=node --target=node20 --format=cjs --outfile=lambda/handler.js",
+    "package:lambda": "npm run build:lambda && cd lambda && zip -q -r ../lambda.zip handler.js && cd .. && echo 'Built lambda.zip'"
   },
   "keywords": [],
   "author": "",
@@ -27,5 +29,8 @@
     "tsx": "^4.22.4",
     "typescript": "^6.0.3",
     "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.1"
   }
 }
