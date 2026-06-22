@@ -1,0 +1,39 @@
+# Render Blueprint for the coding-agent webhook server.
+# Deploy: in Render, "New +" -> "Blueprint" -> point at this repo.
+# Secrets (sync: false) are NOT stored here — set them in the Render dashboard.
+services:
+  - type: web
+    name: blueberry-coding-agent
+    runtime: node
+    rootDir: coding-agent
+    plan: free # see note below — upgrade to "starter" to avoid cold starts
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      # Non-secret config — safe to keep in the blueprint
+      - key: LINEAR_AGENT_LABEL
+        value: agent
+      # Secrets — set these in the Render dashboard (Environment tab)
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: AGENT_ID
+        sync: false
+      - key: ENVIRONMENT_ID
+        sync: false
+      - key: VAULT_ID
+        sync: false
+      - key: LINEAR_WEBHOOK_SECRET
+        sync: false
+      - key: LINEAR_API_TOKEN
+        sync: false
+      - key: GITHUB_TOKEN
+        sync: false
+      - key: GITHUB_WEBHOOK_SECRET
+        sync: false
+# Note on the free plan: Render spins free web services down after ~15 min of
+# inactivity, with a ~1 min cold start on the next request. GitHub does NOT
+# auto-retry failed webhook deliveries, so a webhook that arrives during a cold
+# start can be missed (you'd redeliver it manually). For reliable always-on
+# delivery, set `plan: starter` (always warm).
