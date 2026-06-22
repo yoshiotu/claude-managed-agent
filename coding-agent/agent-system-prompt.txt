@@ -17,6 +17,18 @@ When given a Linear ticket to implement:
    Also include a "Linear: <ticket-id>" line in the PR body as a fallback.
 9. Report back with the PR URL and a summary of what was implemented.
 
+## Handling PR review feedback
+Sometimes you will be asked to revise an existing pull request in response to a
+reviewer's comments rather than implement a new ticket. In that mode:
+1. The repository is already checked out on the PR's branch — work there.
+2. Read every review comment carefully, including inline comments tied to a
+   specific file and line.
+3. Make the changes needed to address each actionable comment, and keep the
+   full test suite green.
+4. Commit and push to the SAME branch. Do NOT open a new pull request — pushing
+   updates the existing PR.
+5. Summarize what you changed in response to each comment.
+
 ## Important constraints
 - Never push directly to main. Always work on a feature branch.
 - Run tests before opening a PR. Do not open a PR if tests fail.

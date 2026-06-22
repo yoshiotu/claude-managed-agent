@@ -1,15 +1,21 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { Config } from "./config.js";
 import type { LinearTicket } from "./linear.js";
+import type { ReviewTask } from "./github.js";
 
+const REPO_URL = "https://github.com/yoshiotu/blueberry";
+
+/**
+ * Implement a Linear ticket: branch off main, write code + tests, open a PR.
+ */
 export async function runTicketSession(
   client: Anthropic,
   config: Config,
   ticket: LinearTicket
 ): Promise<void> {
-  console.log(`[${ticket.identifier}] Starting session for: ${ticket.title}`);
+  const label = ticket.identifier;
+  console.log(`[${label}] Starting session for: ${ticket.title}`);
 
-  // Create session — attach the blueberry repo, reference the vault for GitHub MCP auth
   const session = await client.beta.sessions.create({
     agent: config.AGENT_ID,
     environment_id: config.ENVIRONMENT_ID,
@@ -18,7 +24,7 @@ export async function runTicketSession(
     resources: [
       {
         type: "github_repository",
-        url: "https://github.com/yoshiotu/blueberry",
+        url: REPO_URL,
         authorization_token: config.GITHUB_TOKEN,
         checkout: { type: "branch", name: "main" },
       },
@@ -29,30 +35,79 @@ export async function runTicketSession(
     },
   });
 
+  await kickoffAndDrive(client, session.id, label, {
+    description: buildTaskDescription(ticket),
+    rubric: buildRubric(ticket),
+  });
+}
+
+/**
+ * Revise an existing PR in response to a submitted review: the repo is checked
+ * out on the PR branch; address the comments and push to the same branch.
+ */
+export async function runReviewFixSession(
+  client: Anthropic,
+  config: Config,
+  task: ReviewTask
+): Promise<void> {
+  const label = `PR#${task.prNumber}`;
+  console.log(`[${label}] Starting review-fix session (${task.comments.length} comment(s))`);
+
+  const session = await client.beta.sessions.create({
+    agent: config.AGENT_ID,
+    environment_id: config.ENVIRONMENT_ID,
+    title: `Review fix: PR #${task.prNumber}`,
+    vault_ids: [config.VAULT_ID],
+    resources: [
+      {
+        type: "github_repository",
+        url: REPO_URL,
+        authorization_token: config.GITHUB_TOKEN,
+        checkout: { type: "branch", name: task.branch },
+      },
+    ],
+    metadata: {
+      pr_number: String(task.prNumber),
+      branch: task.branch,
+      ...(task.ticketId ? { linear_identifier: task.ticketId } : {}),
+    },
+  });
+
+  await kickoffAndDrive(client, session.id, label, {
+    description: buildReviewFixDescription(task),
+    rubric: buildReviewFixRubric(task),
+  });
+}
+
+/**
+ * Shared driver: open the stream, send the kickoff outcome, and drain events
+ * until the session reaches a terminal state. Auto-approves tool confirmations.
+ */
+async function kickoffAndDrive(
+  client: Anthropic,
+  sessionId: string,
+  label: string,
+  outcome: { description: string; rubric: string }
+): Promise<void> {
+  console.log(`[${label}] Session created: ${sessionId}`);
   console.log(
-    `[${ticket.identifier}] Session created: ${session.id}`
-  );
-  console.log(
-    `[${ticket.identifier}] Watch live: https://platform.claude.com/workspaces/default/sessions/${session.id}`
+    `[${label}] Watch live: https://platform.claude.com/workspaces/default/sessions/${sessionId}`
   );
 
-  // Open event stream BEFORE sending the kickoff message
-  const stream = await client.beta.sessions.events.stream(session.id);
+  // Open the event stream BEFORE sending the kickoff so no events are missed.
+  const stream = await client.beta.sessions.events.stream(sessionId);
 
-  // Kick off with a structured outcome so the agent iterates until tests pass + PR opened
-  const rubric = buildRubric(ticket);
-  await client.beta.sessions.events.send(session.id, {
+  await client.beta.sessions.events.send(sessionId, {
     events: [
       {
         type: "user.define_outcome",
-        description: buildTaskDescription(ticket),
-        rubric: { type: "text", content: rubric },
+        description: outcome.description,
+        rubric: { type: "text", content: outcome.rubric },
         max_iterations: 5,
       },
     ],
   });
 
-  // Drain the event stream
   const seenIds = new Set<string>();
 
   for await (const event of stream) {
@@ -61,7 +116,7 @@ export async function runTicketSession(
 
     switch (event.type) {
       case "agent.message":
-        process.stdout.write(`\n[${ticket.identifier}] Agent: `);
+        process.stdout.write(`\n[${label}] Agent: `);
         for (const block of event.content ?? []) {
           if ("text" in block) process.stdout.write(block.text);
         }
@@ -69,19 +124,16 @@ export async function runTicketSession(
         break;
 
       case "agent.tool_use":
-        console.log(`[${ticket.identifier}] Tool: ${event.name}`);
+        console.log(`[${label}] Tool: ${event.name}`);
         break;
 
       case "session.status_idle":
         if (event.stop_reason?.type === "requires_action") {
-          // The agent is blocked on tool confirmations. We trust this agent's
-          // toolset, so auto-approve every pending tool call and let it resume.
+          // Auto-approve pending tool calls — we trust this agent's toolset.
           const eventIds = event.stop_reason.event_ids ?? [];
           if (eventIds.length > 0) {
-            console.log(
-              `[${ticket.identifier}] Auto-approving ${eventIds.length} pending tool call(s).`
-            );
-            await client.beta.sessions.events.send(session.id, {
+            console.log(`[${label}] Auto-approving ${eventIds.length} pending tool call(s).`);
+            await client.beta.sessions.events.send(sessionId, {
               events: eventIds.map((id) => ({
                 type: "user.tool_confirmation" as const,
                 tool_use_id: id,
@@ -93,24 +145,21 @@ export async function runTicketSession(
         break;
 
       case "session.status_terminated":
-        console.log(`[${ticket.identifier}] Session terminated.`);
+        console.log(`[${label}] Session terminated.`);
         break;
 
       case "session.error":
-        console.error(`[${ticket.identifier}] Session error:`, event);
+        console.error(`[${label}] Session error:`, event);
         break;
 
       case "span.outcome_evaluation_end":
-        console.log(
-          `[${ticket.identifier}] Outcome (iter ${event.iteration}): ${event.result}`
-        );
+        console.log(`[${label}] Outcome (iter ${event.iteration}): ${event.result}`);
         if (event.result === "satisfied") {
-          console.log(`[${ticket.identifier}] ✓ Done: ${event.explanation}`);
+          console.log(`[${label}] ✓ Done: ${event.explanation}`);
         }
         break;
     }
 
-    // Break on terminal states
     if (event.type === "session.status_terminated") break;
     if (
       event.type === "session.status_idle" &&
@@ -118,7 +167,7 @@ export async function runTicketSession(
     ) break;
   }
 
-  console.log(`[${ticket.identifier}] Session complete.`);
+  console.log(`[${label}] Session complete.`);
 }
 
 function buildTaskDescription(ticket: LinearTicket): string {
@@ -150,7 +199,53 @@ function buildRubric(ticket: LinearTicket): string {
 ## Pull Request
 - [ ] A pull request has been opened on yoshiotu/blueberry.
 - [ ] PR title references the Linear ticket identifier (${ticket.identifier}).
-- [ ] Branch is named \`linear/${ticket.identifier.toLowerCase()}\`.
 - [ ] PR description summarises the change.
+`;
+}
+
+function buildReviewFixDescription(task: ReviewTask): string {
+  const inline = task.comments.length
+    ? task.comments
+        .map((c) => `- ${c.path}${c.line != null ? `:${c.line}` : ""} — ${c.body}`)
+        .join("\n")
+    : "(none)";
+
+  return [
+    `A reviewer (${task.reviewer}) submitted a "${task.reviewState}" review on`,
+    `pull request #${task.prNumber} in yoshiotu/blueberry, which you previously opened.`,
+    `The repository is already checked out on the PR branch \`${task.branch}\`.`,
+    ``,
+    `Address every actionable point of the review feedback below. Then commit your`,
+    `changes and push to the SAME branch \`${task.branch}\` — this updates the existing`,
+    `PR. Do NOT open a new pull request. Keep all tests passing and follow the`,
+    `coding-standards and testing-practices skills.`,
+    ``,
+    `PR: ${task.prUrl}`,
+    ``,
+    `Review summary:`,
+    task.reviewBody || "(no summary text)",
+    ``,
+    `Inline comments:`,
+    inline,
+    ``,
+    `If a comment is a question or you disagree, make the change if reasonable;`,
+    `otherwise explain your reasoning. When done, summarize what you changed for`,
+    `each comment.`,
+  ].join("\n");
+}
+
+function buildReviewFixRubric(task: ReviewTask): string {
+  return `# Done criteria for PR #${task.prNumber} review fixes
+
+## Feedback
+- [ ] Every actionable review comment is addressed in the code (or explicitly justified if not).
+
+## Quality
+- [ ] All existing tests still pass.
+- [ ] Changed code keeps ≥ 80% line coverage and follows the coding standards skill.
+
+## Delivery
+- [ ] Changes are committed and pushed to the existing branch \`${task.branch}\`.
+- [ ] No new pull request was opened; the existing PR #${task.prNumber} is updated.
 `;
 }

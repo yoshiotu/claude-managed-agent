@@ -10,6 +10,7 @@ const ConfigSchema = z.object({
   LINEAR_API_TOKEN: z.string().min(1),
   LINEAR_AGENT_LABEL: z.string().min(1).default("agent"),
   GITHUB_TOKEN: z.string().min(1),
+  GITHUB_WEBHOOK_SECRET: z.string().min(1),
   PORT: z.coerce.number().default(3000),
 });
 
