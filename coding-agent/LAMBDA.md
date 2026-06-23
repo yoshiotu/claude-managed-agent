@@ -1,7 +1,7 @@
 # Deploying the webhook receiver to AWS Lambda
 
-The webhook receiver runs as a single Lambda behind a **Function URL** (HTTPS,
-always-on, no servers to manage). It verifies the webhook signature, creates a
+The webhook receiver runs as a single Lambda behind an **API Gateway HTTP API**
+(HTTPS, always-on, no servers to manage). It verifies the webhook signature, creates a
 Managed Agents session, and returns — the agent then runs to completion on
 Anthropic's cloud. View runs in the Claude session viewer (and CloudWatch logs).
 
@@ -50,37 +50,52 @@ aws lambda update-function-configuration \
   --environment file://aws-env.json
 ```
 
-## 4. Expose a public Function URL
+## 4. Expose it via an API Gateway HTTP API
 
-The URL must be public (`auth-type NONE`) so GitHub/Linear can reach it —
-authenticity is enforced by the HMAC signature check inside the handler.
+A public HTTPS front door so GitHub/Linear can reach the function; authenticity
+is enforced by the HMAC signature check inside the handler. The handler reads
+API Gateway's v2.0 event format (same shape as a Lambda Function URL), so no
+code changes are needed.
+
+> **Why not a Lambda Function URL?** A Function URL is simpler, but some AWS
+> accounts reject public (`auth-type NONE`) Function URLs at the auth layer
+> regardless of a correct resource policy — you get `Forbidden` even though
+> direct `aws lambda invoke` works. API Gateway uses a different ingress path
+> and is not affected, so it's the reliable choice.
 
 ```bash
-aws lambda create-function-url-config \
-  --function-name blueberry-coding-agent \
-  --auth-type NONE \
-  --query FunctionUrl --output text     # prints e.g. https://abc123.lambda-url.us-east-1.on.aws/
+REGION=us-west-1
+ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+FN_ARN="arn:aws:lambda:${REGION}:${ACCOUNT_ID}:function:blueberry-coding-agent"
 
+# Create an HTTP API wired to the Lambda (quick-create: catch-all route + auto-deploy stage)
+API_ID=$(aws apigatewayv2 create-api \
+  --name blueberry-coding-agent-api \
+  --protocol-type HTTP \
+  --target "$FN_ARN" \
+  --region "$REGION" \
+  --query ApiId --output text)
+
+# Allow API Gateway to invoke the Lambda (quick-create usually adds this; harmless if duplicate)
 aws lambda add-permission \
-  --function-name blueberry-coding-agent \
-  --action lambda:InvokeFunctionUrl \
-  --principal "*" \
-  --function-url-auth-type NONE \
-  --statement-id FunctionURLAllowPublicAccess
+  --function-name blueberry-coding-agent --region "$REGION" \
+  --statement-id apigw-invoke \
+  --action lambda:InvokeFunction \
+  --principal apigateway.amazonaws.com \
+  --source-arn "arn:aws:execute-api:${REGION}:${ACCOUNT_ID}:${API_ID}/*/*" 2>/dev/null || true
+
+# Print the endpoint and sanity-check it
+ENDPOINT=$(aws apigatewayv2 get-api --api-id "$API_ID" --region "$REGION" --query ApiEndpoint --output text)
+echo "Endpoint: $ENDPOINT"
+curl "${ENDPOINT}/health"    # -> {"ok":true}
 ```
 
-Sanity check (should return `{"ok":true}`):
-
-```bash
-curl https://<your-function-url>/health
-```
-
-## 5. Point the webhooks at the Function URL
+## 5. Point the webhooks at the endpoint
 
 Replace the tunnel URL in both:
 
-- **Linear** webhook → `https://<your-function-url>/webhook/linear`
-- **GitHub** (blueberry repo) webhook → `https://<your-function-url>/webhook/github`
+- **Linear** webhook → `<endpoint>/webhook/linear`
+- **GitHub** (blueberry repo) webhook → `<endpoint>/webhook/github`
 
 Then stop the local `npm run dev` server and the `cloudflared` tunnel.
 
