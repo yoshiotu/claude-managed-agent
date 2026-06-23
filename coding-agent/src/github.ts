@@ -14,6 +14,7 @@ export interface ReviewTask {
   branch: string; // PR head ref
   baseBranch: string;
   ticketId: string | null; // extracted from title/branch, for logging/metadata
+  reviewId: number; // the GitHub review id — used to dedup duplicate deliveries
   reviewer: string;
   reviewState: string; // "changes_requested" | "commented"
   reviewBody: string;
@@ -109,6 +110,7 @@ export async function buildReviewTask(
     branch: pr.head.ref,
     baseBranch: pr.base.ref,
     ticketId: extractTicketId(pr.title, pr.head.ref),
+    reviewId: payload.review.id,
     reviewer: payload.review.user.login,
     reviewState: payload.review.state,
     reviewBody,

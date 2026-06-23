@@ -5,7 +5,31 @@ import type { ReviewTask } from "./github.js";
 
 const REPO_URL = "https://github.com/yoshiotu/blueberry";
 
+// Window for treating a repeat trigger as a duplicate. Linear can emit both a
+// create and a label-added update for one ticket; webhooks can also be retried.
+const DEDUP_WINDOW_MS = 10 * 60 * 1000;
+
 type SessionParams = Parameters<Anthropic["beta"]["sessions"]["create"]>[0];
+
+/**
+ * True if a session created within the dedup window already matches `match`
+ * (by metadata). Used to avoid spawning a second run for the same trigger.
+ */
+async function recentDuplicateExists(
+  client: Anthropic,
+  config: Config,
+  match: (metadata: Record<string, string>) => boolean
+): Promise<boolean> {
+  const since = new Date(Date.now() - DEDUP_WINDOW_MS).toISOString();
+  const page = await client.beta.sessions.list({
+    agent_id: config.AGENT_ID,
+    "created_at[gte]": since,
+  });
+  for await (const session of page) {
+    if (match(session.metadata ?? {})) return true;
+  }
+  return false;
+}
 
 // ---------------------------------------------------------------------------
 // Fire-and-forget starters (used by the Lambda handler).
@@ -19,7 +43,11 @@ export async function startTicketSession(
   client: Anthropic,
   config: Config,
   ticket: LinearTicket
-): Promise<string> {
+): Promise<string | null> {
+  if (await recentDuplicateExists(client, config, (m) => m.linear_identifier === ticket.identifier)) {
+    console.log(`[${ticket.identifier}] Duplicate trigger — a recent session already exists. Skipping.`);
+    return null;
+  }
   const session = await client.beta.sessions.create(ticketSessionParams(config, ticket));
   logCreated(ticket.identifier, session.id);
   await sendOutcome(client, session.id, buildTaskDescription(ticket), buildRubric(ticket));
@@ -30,7 +58,11 @@ export async function startReviewFixSession(
   client: Anthropic,
   config: Config,
   task: ReviewTask
-): Promise<string> {
+): Promise<string | null> {
+  if (await recentDuplicateExists(client, config, (m) => m.review_id === String(task.reviewId))) {
+    console.log(`[PR#${task.prNumber}] Duplicate review delivery — a recent session already exists. Skipping.`);
+    return null;
+  }
   const session = await client.beta.sessions.create(reviewSessionParams(config, task));
   logCreated(`PR#${task.prNumber}`, session.id);
   await sendOutcome(
@@ -52,6 +84,10 @@ export async function runTicketSession(
   config: Config,
   ticket: LinearTicket
 ): Promise<void> {
+  if (await recentDuplicateExists(client, config, (m) => m.linear_identifier === ticket.identifier)) {
+    console.log(`[${ticket.identifier}] Duplicate trigger — a recent session already exists. Skipping.`);
+    return;
+  }
   const session = await client.beta.sessions.create(ticketSessionParams(config, ticket));
   logCreated(ticket.identifier, session.id);
   const stream = await client.beta.sessions.events.stream(session.id);
@@ -64,6 +100,10 @@ export async function runReviewFixSession(
   config: Config,
   task: ReviewTask
 ): Promise<void> {
+  if (await recentDuplicateExists(client, config, (m) => m.review_id === String(task.reviewId))) {
+    console.log(`[PR#${task.prNumber}] Duplicate review delivery — a recent session already exists. Skipping.`);
+    return;
+  }
   const session = await client.beta.sessions.create(reviewSessionParams(config, task));
   logCreated(`PR#${task.prNumber}`, session.id);
   const stream = await client.beta.sessions.events.stream(session.id);
@@ -117,6 +157,7 @@ function reviewSessionParams(config: Config, task: ReviewTask): SessionParams {
     ],
     metadata: {
       pr_number: String(task.prNumber),
+      review_id: String(task.reviewId),
       branch: task.branch,
       ...(task.ticketId ? { linear_identifier: task.ticketId } : {}),
     },

@@ -114,6 +114,9 @@ async function handleLinear(
   const ticket = ticketFromPayload(payload);
   console.log(`Ticket trigger: ${ticket.identifier} — ${ticket.title}`);
   const sessionId = await startTicketSession(client, config, ticket);
+  if (!sessionId) {
+    return reply(200, { ok: true, ticket: ticket.identifier, skipped: "duplicate" });
+  }
   return reply(200, { ok: true, ticket: ticket.identifier, session: sessionId });
 }
 
@@ -145,5 +148,8 @@ async function handleGithub(
 
   console.log(`Review trigger: PR #${task.prNumber} (${task.reviewState}) by ${task.reviewer}`);
   const sessionId = await startReviewFixSession(client, config, task);
+  if (!sessionId) {
+    return reply(200, { ok: true, pr: task.prNumber, skipped: "duplicate" });
+  }
   return reply(200, { ok: true, pr: task.prNumber, session: sessionId });
 }
