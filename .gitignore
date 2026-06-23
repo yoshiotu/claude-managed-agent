@@ -17,3 +17,6 @@ dist/
 
 # OS
 .DS_Store
+
+# Local clone of the target repo — not part of this repo
+/blueberry/
