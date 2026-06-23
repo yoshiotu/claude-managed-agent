@@ -14,6 +14,14 @@
 - Use `zod` for runtime validation at system boundaries (API inputs, env vars).
 - Avoid `any`; use `unknown` and narrow with type guards.
 
+## Go
+- Target the Go toolchain pinned in `go.mod` — currently `go 1.26.4` with
+  `toolchain go1.26.4`. Do NOT downgrade the `go` or `toolchain` directives;
+  `GOTOOLCHAIN=auto` fetches the pinned toolchain automatically.
+- Keep `gofmt` and `go vet ./...` clean. Handle every returned `error`
+  explicitly — never discard one with `_`.
+- Prefer the standard library; add dependencies only when they clearly earn it.
+
 ## File organization
 - Group by feature, not by type (e.g. `auth/` contains handler + service + types).
 - Keep files under ~300 lines; split if larger.
