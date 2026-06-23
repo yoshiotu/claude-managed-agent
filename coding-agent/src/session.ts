@@ -1,7 +1,10 @@
-import Anthropic from "@anthropic-ai/sdk";
+import Anthropic, { toFile } from "@anthropic-ai/sdk";
 import type { Config } from "./config.js";
 import type { LinearTicket } from "./linear.js";
 import type { ReviewTask } from "./github.js";
+import { fetchTicketAttachments } from "./attachments.js";
+
+type FileResource = { type: "file"; file_id: string; mount_path: string };
 
 const REPO_URL = "https://github.com/yoshiotu/blueberry";
 
@@ -33,6 +36,53 @@ async function recentDuplicateExists(
   return false;
 }
 
+/**
+ * Download the ticket's uploaded files, upload them to the Files API, and return
+ * `file` resources mounting them under /workspace/attachments/ plus their paths.
+ * Failures are non-fatal — the session still runs without the attachments.
+ */
+async function prepareAttachmentResources(
+  client: Anthropic,
+  config: Config,
+  ticket: LinearTicket
+): Promise<{ resources: FileResource[]; paths: string[] }> {
+  let attachments;
+  try {
+    attachments = await fetchTicketAttachments(ticket, config.LINEAR_API_TOKEN);
+  } catch (err) {
+    console.warn(`[${ticket.identifier}] could not fetch attachments: ${(err as Error).message}`);
+    return { resources: [], paths: [] };
+  }
+
+  const resources: FileResource[] = [];
+  const paths: string[] = [];
+  const used = new Set<string>();
+
+  for (const a of attachments) {
+    let name = a.filename;
+    if (used.has(name)) {
+      const dot = a.filename.lastIndexOf(".");
+      let n = 1;
+      do {
+        name =
+          dot > 0
+            ? `${a.filename.slice(0, dot)}-${n}${a.filename.slice(dot)}`
+            : `${a.filename}-${n}`;
+        n++;
+      } while (used.has(name));
+    }
+    used.add(name);
+
+    const mount_path = `/workspace/attachments/${name}`;
+    const file = await client.beta.files.upload({ file: await toFile(a.data, name) });
+    resources.push({ type: "file", file_id: file.id, mount_path });
+    paths.push(mount_path);
+  }
+
+  if (paths.length) console.log(`[${ticket.identifier}] mounted ${paths.length} attachment(s)`);
+  return { resources, paths };
+}
+
 // ---------------------------------------------------------------------------
 // Fire-and-forget starters (used by the Lambda handler).
 // Create the session and send the kickoff outcome, then return. The agent runs
@@ -50,9 +100,10 @@ export async function startTicketSession(
     console.log(`[${ticket.identifier}] Duplicate trigger — a recent session already exists. Skipping.`);
     return null;
   }
-  const session = await client.beta.sessions.create(ticketSessionParams(config, ticket));
+  const { resources, paths } = await prepareAttachmentResources(client, config, ticket);
+  const session = await client.beta.sessions.create(ticketSessionParams(config, ticket, resources));
   logCreated(ticket.identifier, session.id);
-  await sendOutcome(client, session.id, buildTaskDescription(ticket), buildRubric(ticket));
+  await sendOutcome(client, session.id, buildTaskDescription(ticket, paths), buildRubric(ticket));
   return session.id;
 }
 
@@ -90,10 +141,11 @@ export async function runTicketSession(
     console.log(`[${ticket.identifier}] Duplicate trigger — a recent session already exists. Skipping.`);
     return;
   }
-  const session = await client.beta.sessions.create(ticketSessionParams(config, ticket));
+  const { resources, paths } = await prepareAttachmentResources(client, config, ticket);
+  const session = await client.beta.sessions.create(ticketSessionParams(config, ticket, resources));
   logCreated(ticket.identifier, session.id);
   const stream = await client.beta.sessions.events.stream(session.id);
-  await sendOutcome(client, session.id, buildTaskDescription(ticket), buildRubric(ticket));
+  await sendOutcome(client, session.id, buildTaskDescription(ticket, paths), buildRubric(ticket));
   await drive(client, session.id, ticket.identifier, stream);
 }
 
@@ -122,7 +174,11 @@ export async function runReviewFixSession(
 // Shared building blocks
 // ---------------------------------------------------------------------------
 
-function ticketSessionParams(config: Config, ticket: LinearTicket): SessionParams {
+function ticketSessionParams(
+  config: Config,
+  ticket: LinearTicket,
+  fileResources: FileResource[] = []
+): SessionParams {
   return {
     agent: config.AGENT_ID,
     environment_id: config.ENVIRONMENT_ID,
@@ -135,6 +191,7 @@ function ticketSessionParams(config: Config, ticket: LinearTicket): SessionParam
         authorization_token: config.GITHUB_TOKEN,
         checkout: { type: "branch", name: "main" },
       },
+      ...fileResources,
     ],
     metadata: {
       linear_ticket_id: ticket.id,
@@ -263,8 +320,8 @@ async function drive(
 // Task descriptions + rubrics
 // ---------------------------------------------------------------------------
 
-function buildTaskDescription(ticket: LinearTicket): string {
-  return [
+function buildTaskDescription(ticket: LinearTicket, attachmentPaths: string[] = []): string {
+  const lines = [
     `Implement the following Linear ticket in the yoshiotu/blueberry repository.`,
     ``,
     `Ticket: ${ticket.identifier}`,
@@ -272,9 +329,18 @@ function buildTaskDescription(ticket: LinearTicket): string {
     ticket.description ? `Description:\n${ticket.description}` : "",
     ``,
     `Linear URL: ${ticket.url}`,
-  ]
-    .filter((l) => l !== undefined)
-    .join("\n");
+  ];
+
+  if (attachmentPaths.length) {
+    lines.push(
+      ``,
+      `The ticket has ${attachmentPaths.length} attached file(s), mounted read-only in the sandbox:`,
+      ...attachmentPaths.map((p) => `- ${p}`),
+      `Inspect them as needed (e.g. unzip archives, view images/specs) and use them to inform the implementation.`
+    );
+  }
+
+  return lines.filter((l) => l !== undefined).join("\n");
 }
 
 function buildRubric(ticket: LinearTicket): string {
