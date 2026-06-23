@@ -5,8 +5,10 @@ import type { ReviewTask } from "./github.js";
 
 const REPO_URL = "https://github.com/yoshiotu/blueberry";
 
-// Window for treating a repeat trigger as a duplicate. Linear can emit both a
-// create and a label-added update for one ticket; webhooks can also be retried.
+// Window for treating a repeat trigger as a duplicate — e.g. the label removed
+// and quickly re-added, a create-with-label plus a later label edit, or a
+// retried webhook delivery. A deliberate re-label after the window is treated
+// as a fresh "run it again" request.
 const DEDUP_WINDOW_MS = 10 * 60 * 1000;
 
 type SessionParams = Parameters<Anthropic["beta"]["sessions"]["create"]>[0];
