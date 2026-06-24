@@ -45,17 +45,16 @@ async function prepareAttachmentResources(
   client: Anthropic,
   config: Config,
   ticket: LinearTicket
-): Promise<{ resources: FileResource[]; paths: string[] }> {
+): Promise<FileResource[]> {
   let attachments;
   try {
     attachments = await fetchTicketAttachments(ticket, config.LINEAR_API_TOKEN);
   } catch (err) {
     console.warn(`[${ticket.identifier}] could not fetch attachments: ${(err as Error).message}`);
-    return { resources: [], paths: [] };
+    return [];
   }
 
   const resources: FileResource[] = [];
-  const paths: string[] = [];
   const used = new Set<string>();
 
   for (const a of attachments) {
@@ -73,14 +72,19 @@ async function prepareAttachmentResources(
     }
     used.add(name);
 
-    const mount_path = `/workspace/attachments/${name}`;
+    // mount_path is resolved relative to /mnt/session/uploads/; the resolved
+    // absolute path is read back from the session and given to the agent.
     const file = await client.beta.files.upload({ file: await toFile(a.data, name) });
-    resources.push({ type: "file", file_id: file.id, mount_path });
-    paths.push(mount_path);
+    resources.push({ type: "file", file_id: file.id, mount_path: `attachments/${name}` });
   }
 
-  if (paths.length) console.log(`[${ticket.identifier}] mounted ${paths.length} attachment(s)`);
-  return { resources, paths };
+  if (resources.length) console.log(`[${ticket.identifier}] prepared ${resources.length} attachment(s)`);
+  return resources;
+}
+
+/** Resolved mount paths of the file resources attached to a created session. */
+function mountedFilePaths(session: { resources: Anthropic.Beta.Sessions.BetaManagedAgentsSession["resources"] }): string[] {
+  return session.resources.flatMap((r) => (r.type === "file" && r.mount_path ? [r.mount_path] : []));
 }
 
 // ---------------------------------------------------------------------------
@@ -100,10 +104,10 @@ export async function startTicketSession(
     console.log(`[${ticket.identifier}] Duplicate trigger — a recent session already exists. Skipping.`);
     return null;
   }
-  const { resources, paths } = await prepareAttachmentResources(client, config, ticket);
+  const resources = await prepareAttachmentResources(client, config, ticket);
   const session = await client.beta.sessions.create(ticketSessionParams(config, ticket, resources));
   logCreated(ticket.identifier, session.id);
-  await sendOutcome(client, session.id, buildTaskDescription(ticket, paths), buildRubric(ticket));
+  await sendOutcome(client, session.id, buildTaskDescription(ticket, mountedFilePaths(session)), buildRubric(ticket));
   return session.id;
 }
 
@@ -141,11 +145,11 @@ export async function runTicketSession(
     console.log(`[${ticket.identifier}] Duplicate trigger — a recent session already exists. Skipping.`);
     return;
   }
-  const { resources, paths } = await prepareAttachmentResources(client, config, ticket);
+  const resources = await prepareAttachmentResources(client, config, ticket);
   const session = await client.beta.sessions.create(ticketSessionParams(config, ticket, resources));
   logCreated(ticket.identifier, session.id);
   const stream = await client.beta.sessions.events.stream(session.id);
-  await sendOutcome(client, session.id, buildTaskDescription(ticket, paths), buildRubric(ticket));
+  await sendOutcome(client, session.id, buildTaskDescription(ticket, mountedFilePaths(session)), buildRubric(ticket));
   await drive(client, session.id, ticket.identifier, stream);
 }
 
